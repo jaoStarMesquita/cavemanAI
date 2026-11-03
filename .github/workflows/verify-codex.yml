@@ -1,0 +1,53 @@
+name: Verify Codex 0.166.0 profile
+on:
+  pull_request:
+    paths:
+      - "agents/profiles/codex.json"
+      - "packages/cli/**"
+      - "installer/lib/portable-process.js"
+      - ".github/scripts/verify-codex-route.mjs"
+      - ".github/workflows/verify-codex.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-codex-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# profiles.yml owns PR scope validation using event base/head SHAs and full history.
+jobs:
+  route:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.16.0'
+      - name: Install isolated upstream binary and CLI build dependencies
+        shell: pwsh
+        run: |
+          $taskPrefix = Join-Path $env:RUNNER_TEMP 'codex-01660'
+          npm install --prefix $taskPrefix --no-audit --no-fund --no-package-lock @openai/codex@0.166.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          (Join-Path $taskPrefix 'node_modules\.bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          npm install --ignore-scripts --no-audit --no-fund --no-package-lock --prefix packages/cli
+          exit $LASTEXITCODE
+      - run: npm --prefix packages/cli run build
+      - name: Require the candidate pin without drift allowances
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/revision.txt
+          node agents/probe-installed.mjs --require codex --json > evidence/probe-strict.json
+          node -e "const assert=require('node:assert/strict'),r=require('./evidence/probe-strict.json').results.find(r=>r.id==='codex');assert.equal(r.status,'ok');assert.equal(r.tested,'0.166.0');assert.equal(r.observed,'0.166.0');assert.equal(r.version_ok,true);assert.equal(r.help_ok,true);assert.equal(r.version_matches,true);"
+      - name: Real routing probes from two scratch homes
+        run: node .github/scripts/verify-codex-route.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-codex-01660
+          path: evidence/
