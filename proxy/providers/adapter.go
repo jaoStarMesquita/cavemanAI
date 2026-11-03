@@ -426,6 +426,14 @@ const (
 	recoveryToolName     = "caveman_retrieve"
 	mcpRecoveryToolName  = "mcp__caveman__caveman_retrieve"
 	kiloRecoveryToolName = "caveman_caveman_retrieve"
+	// `caveman wrap claude` registers the recovery MCP server inside its
+	// ephemeral `caveman-wrap` plugin (buildClaudeEphemeralPlugin in
+	// packages/cli/src/index.ts). Claude Code keys a plugin's MCP server as
+	// `plugin:<plugin>:<server>` and then sanitises every character outside
+	// [A-Za-z0-9_-] to `_` when it builds the tool name, so the server
+	// `caveman` inside plugin `caveman-wrap` is called under this one spelling.
+	// tests/verify_repo.py holds the two sources to each other.
+	claudeWrapRecoveryToolName = "mcp__plugin_caveman-wrap_caveman__caveman_retrieve"
 )
 
 // IsRecoveryToolName reports whether a tool call is a caveman recovery call.
@@ -438,7 +446,8 @@ const (
 // elision it was trying to escape. Measured on 2026-08-06: the agent called
 // retrieve, reported "Same truncation", and re-read the same file seven times.
 func IsRecoveryToolName(name string) bool {
-	return name == recoveryToolName || name == mcpRecoveryToolName || name == kiloRecoveryToolName
+	return name == recoveryToolName || name == mcpRecoveryToolName || name == kiloRecoveryToolName ||
+		name == claudeWrapRecoveryToolName
 }
 
 type Base struct {
@@ -1210,6 +1219,16 @@ func mergeUsage(provider string, obj map[string]any, usage *UsageObservation) {
 		// response.completed.response, beside (not inside) response.usage.
 		mergePricingQualifiers(resp, usage)
 		mergeProviderOutcomeQualifiers(provider, resp, usage)
+	}
+	// Anthropic's streaming message_start carries its usage object one level
+	// down, on message.usage — the only place streaming input_tokens ever
+	// appear, which is why usageObjects() reaches it. The outcome-qualifier
+	// guard has to reach the same object, or a separately-billed iteration kind
+	// riding it is never inspected and a token-only subtotal is presented as the
+	// exact bill (#1453). message_start carries no stop_reason, so the refusal
+	// arm inside stays inert for it.
+	if msg, ok := obj["message"].(map[string]any); ok {
+		mergeProviderOutcomeQualifiers(provider, msg, usage)
 	}
 	for _, u := range usageObjects(obj) {
 		if hasGeminiUsageKeys(u) {
